@@ -1,0 +1,21 @@
+# env files
+.env
+
+# python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+# .pyc files
+*.pyc
+
+# .pyo files
+*.pyo
+
+# .pyd files
+*.pyd
+
+# .pyw files
