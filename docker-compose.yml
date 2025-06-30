@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  fastapi-app:
+    build: .
+    container_name: gitea-webhook-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PLANE_API_TOKEN=${PLANE_API_TOKEN}
+      - WORKSPACE_SLUG=${WORKSPACE_SLUG}
+      - PLANE_BASE_URL=${PLANE_BASE_URL}
+    volumes:
+      # Mount source code for development (hot reload)
+      - .:/app
+      # Exclude virtual environment from mounting
+      - /app/venv
+    restart: unless-stopped
+    networks:
+      - webhook-network
+
+networks:
+  webhook-network:
+    driver: bridge
