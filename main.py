@@ -12,6 +12,8 @@ PLANE_TOKEN = os.getenv("PLANE_API_TOKEN")
 WORKSPACE_SLUG = os.getenv("WORKSPACE_SLUG", "aoc") 
 PLANE_BASE_URL = os.getenv("PLANE_BASE_URL", "https://plane.loolootest.com")
 
+pr_task_history = {}
+
 headers = {
     "X-API-Key": PLANE_TOKEN,
     "Content-Type": "application/json"
@@ -93,31 +95,62 @@ async def gitea_webhook(request: Request):
         sender_name = payload['sender']['login']
         sender_email = payload['sender']['email']
         
+        # Extract all Plane task IDs from pull request body
+        plane_task_ids = extract_plane_task_ids(pull_request_body)
+        current_task_ids = set(plane_task_ids)
+        
+        # Handle different actions
+        if action == "edited":
+            # Check if this PR has been tracked before
+            if pull_request_link in pr_task_history:
+                previous_task_ids = pr_task_history[pull_request_link]["task_ids"]
+                
+                # Find new task IDs (not commented before)
+                new_task_ids = current_task_ids - previous_task_ids
+                
+                if not new_task_ids:
+                    return {
+                        "status": "success", 
+                        "message": "Webhook processed but no new task IDs found (avoiding duplicate comments)",
+                        "action": action,
+                        "existing_tasks": list(previous_task_ids),
+                        "current_tasks": list(current_task_ids)
+                    }
+                
+                # Only comment on new task IDs
+                plane_task_ids = list(new_task_ids)
+            # If PR not tracked before, proceed with all task IDs
+        elif action in ["synchronize"]:
+            # Skip synchronize actions completely
+            return {
+                "status": "success", 
+                "message": f"Webhook processed but skipped comment for action: {action}",
+                "action": action
+            }
+        
         # Check if PR is merged (could be "closed" with merged = true or "merged" action)
         is_merged = (
             action == "merged" or 
             (action == "closed" and payload.get("pull_request", {}).get("merged", False))
         )
         
-        # Extract all Plane task IDs from pull request body
-        plane_task_ids = extract_plane_task_ids(pull_request_body)
+        # Clean up history when PR is merged or closed
+        if is_merged or action == "closed":
+            if pull_request_link in pr_task_history:
+                del pr_task_history[pull_request_link]
         
         if plane_task_ids:
             # Create comment body based on action type
             if is_merged:
                 comment_body = f"""<h3>✅ Pull Request Merged</h3>
-<p><strong>Title:</strong> {pull_request_title}</p>
-<p><strong>Author:</strong> {sender_name} ({sender_email})</p>
 <p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
-<p><strong>Status:</strong> 🎉 Successfully merged!</p>
-<p><em>This comment was automatically generated from a Gitea webhook.</em></p>"""
+"""
             else:
-                comment_body = f"""<h3>🔄 Pull Request Update</h3>
+                comment_body = f"""<h3>🔄 Pull Request {action.title()}</h3>
 <p><strong>Title:</strong> {pull_request_title}</p>
 <p><strong>Author:</strong> {sender_name} ({sender_email})</p>
 <p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
-<p><strong>Action:</strong> {action}</p>
-<p><em>This comment was automatically generated from a Gitea webhook.</em></p>"""
+"""
             
             # Post comment to all Plane issues
             successful_posts = []
@@ -129,6 +162,13 @@ async def gitea_webhook(request: Request):
                     successful_posts.append(task_id)
                 else:
                     failed_posts.append(task_id)
+            
+            # Update history with current task IDs
+            if successful_posts and not is_merged and action != "closed":
+                if pull_request_link not in pr_task_history:
+                    pr_task_history[pull_request_link] = {"task_ids": set(), "last_action": action}
+                pr_task_history[pull_request_link]["task_ids"].update(successful_posts)
+                pr_task_history[pull_request_link]["last_action"] = action
             
             # Return status based on results
             if successful_posts and not failed_posts:
