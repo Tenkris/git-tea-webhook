@@ -17,15 +17,27 @@ headers = {
     "Content-Type": "application/json"
 }
 
-def extract_plane_task_id(text: str) -> str | None:
+def extract_plane_task_ids(text: str) -> list[str]:
     """
-    Extract task ID from Plane link pattern: {PLANE_BASE_URL}/{WORKSPACE_SLUG}/browse/{TASK-ID}/
-    Returns the task ID (e.g., 'WEB-39') if found, None otherwise
+    Extract all task IDs from both Plane link patterns and direct task ID patterns:
+    1. From URL: {PLANE_BASE_URL}/{WORKSPACE_SLUG}/browse/{TASK-ID}/
+    2. From string: {PROJECT}-{NUMBER} (e.g., WEB-102)
+    Returns a list of unique task IDs (e.g., ['WEB-39', 'WEB-40']) if found, empty list otherwise
     """
+    task_ids = set()
+    
+    # Extract from URL patterns
     escaped_base_url = re.escape(PLANE_BASE_URL)
-    pattern = rf"{escaped_base_url}/{re.escape(WORKSPACE_SLUG)}/browse/([A-Z]+-\d+)/?"
-    match = re.search(pattern, text)
-    return match.group(1) if match else None
+    url_pattern = rf"{escaped_base_url}/{re.escape(WORKSPACE_SLUG)}/browse/([A-Z]+-\d+)/?"
+    url_matches = re.findall(url_pattern, text)
+    task_ids.update(url_matches)
+    
+    # Extract from direct task ID patterns (e.g., WEB-102)
+    task_id_pattern = r'\b([A-Z]+-\d+)\b'
+    task_id_matches = re.findall(task_id_pattern, text)
+    task_ids.update(task_id_matches)
+    
+    return list(task_ids)
 
 async def post_comment_to_plane_issue(issue_identifier: str, comment_body: str) -> bool:
     """
@@ -74,44 +86,78 @@ async def gitea_webhook(request: Request):
     payload = await request.json()
     
     try:
+        action = payload.get("action", "")
         pull_request_link = payload["pull_request"]["url"]
         pull_request_body = payload['pull_request']['body']  
         pull_request_title = payload['pull_request']['title'] 
         sender_name = payload['sender']['login']
         sender_email = payload['sender']['email']
         
-        # Extract Plane task ID from pull request body
-        plane_task_id = extract_plane_task_id(pull_request_body)
+        # Check if PR is merged (could be "closed" with merged = true or "merged" action)
+        is_merged = (
+            action == "merged" or 
+            (action == "closed" and payload.get("pull_request", {}).get("merged", False))
+        )
         
-        if plane_task_id:
-            # Create comment body with PR information
-            comment_body = f"""
-            <h3>🔄 Pull Request Update</h3>
-            <p><strong>Title:</strong> {pull_request_title}</p>
-            <p><strong>Author:</strong> {sender_name} ({sender_email})</p>
-            <p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
-            <p><em>This comment was automatically generated from a Gitea webhook.</em></p>
-            """
+        # Extract all Plane task IDs from pull request body
+        plane_task_ids = extract_plane_task_ids(pull_request_body)
+        
+        if plane_task_ids:
+            # Create comment body based on action type
+            if is_merged:
+                comment_body = f"""<h3>✅ Pull Request Merged</h3>
+<p><strong>Title:</strong> {pull_request_title}</p>
+<p><strong>Author:</strong> {sender_name} ({sender_email})</p>
+<p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
+<p><strong>Status:</strong> 🎉 Successfully merged!</p>
+<p><em>This comment was automatically generated from a Gitea webhook.</em></p>"""
+            else:
+                comment_body = f"""<h3>🔄 Pull Request Update</h3>
+<p><strong>Title:</strong> {pull_request_title}</p>
+<p><strong>Author:</strong> {sender_name} ({sender_email})</p>
+<p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
+<p><strong>Action:</strong> {action}</p>
+<p><em>This comment was automatically generated from a Gitea webhook.</em></p>"""
             
-            # Post comment to Plane issue
-            success = await post_comment_to_plane_issue(plane_task_id, comment_body)
+            # Post comment to all Plane issues
+            successful_posts = []
+            failed_posts = []
             
-            if success:
+            for task_id in plane_task_ids:
+                success = await post_comment_to_plane_issue(task_id, comment_body)
+                if success:
+                    successful_posts.append(task_id)
+                else:
+                    failed_posts.append(task_id)
+            
+            # Return status based on results
+            if successful_posts and not failed_posts:
                 return {
                     "status": "success", 
-                    "message": f"Comment posted to Plane issue {plane_task_id}",
-                    "plane_task_id": plane_task_id
+                    "message": f"Comments posted to {len(successful_posts)} Plane issues",
+                    "successful_tasks": successful_posts,
+                    "action": action
+                }
+            elif successful_posts and failed_posts:
+                return {
+                    "status": "partial_success", 
+                    "message": f"Comments posted to {len(successful_posts)} out of {len(plane_task_ids)} Plane issues",
+                    "successful_tasks": successful_posts,
+                    "failed_tasks": failed_posts,
+                    "action": action
                 }
             else:
                 return {
                     "status": "error", 
-                    "message": f"Failed to post comment to Plane issue {plane_task_id}",
-                    "plane_task_id": plane_task_id
+                    "message": f"Failed to post comments to all {len(plane_task_ids)} Plane issues",
+                    "failed_tasks": failed_posts,
+                    "action": action
                 }
         else:
             return {
                 "status": "success", 
-                "message": "Webhook processed but no Plane link found"
+                "message": "Webhook processed but no Plane link found",
+                "action": action
             }
             
     except KeyError as e:
