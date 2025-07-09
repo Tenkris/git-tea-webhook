@@ -95,9 +95,14 @@ async def gitea_webhook(request: Request):
         sender_name = payload['sender']['login']
         sender_email = payload['sender']['email']
         
-        # Extract all Plane task IDs from pull request body
-        plane_task_ids = extract_plane_task_ids(pull_request_body)
-        current_task_ids = set(plane_task_ids)
+        # Extract all Plane task IDs from both pull request title and body
+        title_task_ids = extract_plane_task_ids(pull_request_title)
+        body_task_ids = extract_plane_task_ids(pull_request_body)
+        
+        # Combine task IDs from both title and body
+        all_task_ids = set(title_task_ids + body_task_ids)
+        plane_task_ids = list(all_task_ids)
+        current_task_ids = all_task_ids
         
         # Handle different actions
         if action == "edited":
@@ -143,6 +148,10 @@ async def gitea_webhook(request: Request):
             # Create comment body based on action type
             if is_merged:
                 comment_body = f"""<h3>✅ Pull Request Merged</h3>
+<p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
+"""
+            elif action == "closed":
+                comment_body = f"""<h3>❌ Pull Request Closed</h3>
 <p><strong>PR Link:</strong> <a href="{pull_request_link}" target="_blank">{pull_request_link}</a></p>
 """
             else:
